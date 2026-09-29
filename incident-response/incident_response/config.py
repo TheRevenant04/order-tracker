@@ -98,7 +98,10 @@ class Settings:
     opencode_bin: str = "opencode"
     opencode_agent: str = "incident-investigator"
     opencode_model: str | None = None
-    # Only the read-only agent is used, so nothing is written without a human.
+    # Off by default. The agent may edit files, but it is never given --auto, so
+    # opencode still asks for confirmation on anything the agent definition does
+    # not already allow, and it has no shell, so it cannot commit or run tests.
+    # Set to 1 only alongside an agent you trust to act unattended.
     opencode_auto: bool = False
     assistant_timeout: float = 900.0
     # Escape hatch for running the service without spending model tokens.

@@ -82,7 +82,7 @@ async def receive_alert(request: Request):
     if not looks_like_grafana_webhook(body):
         raise HTTPException(
             400,
-            "Expected a Grafana webhook payload with `alerts` and `status`.",
+            "Expected a Grafana webhook payload with a non-empty `alerts` array.",
         )
 
     payload = AlertPayload.parse(body)

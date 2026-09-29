@@ -111,7 +111,9 @@ The window is 5 minutes, the group is evaluated every minute, and the rule needs
 
 The annotations name the exact query, the window and the sustain period, and link straight to **Server errors by route** on the dashboard via `dashboardUid` and `panelId`. The description also points at the error ratio and error log panels, which slice the same `http_response_status_code` label and are usually the fastest way to tell a single bad order id from a broken route.
 
-**No contact point is provisioned,** so nothing is delivered to a real destination. Grafana still routes the alert to its built-in `grafana-default-email` receiver, which has no SMTP server behind it, so while the rule is firing the Grafana log shows `level=error ... SMTP not configured`. That is the expected consequence of not configuring delivery, not a fault in the rule; the rule's own `health` stays `ok` and `lastError` stays empty. Adding a real destination is a `contactPoints` entry in the same file plus a notification policy, and the alert rule itself needs no change.
+Delivery is provisioned in `grafana/provisioning/alerting/incident-responder.yaml`: a webhook contact point posting to the incident responder, and the notification policy that routes this folder to it. Both halves ship together on purpose. A contact point with no policy is the easiest thing in Grafana to get wrong — the rule fires, the receiver exists, and nothing is delivered.
+
+See [`incident-response/README.md`](incident-response/README.md) for the responder itself. To stop delivery, remove that file and restart Grafana: the rule keeps evaluating and keeps firing, it just goes nowhere.
 
 Where to look for it, because the rule is easy to mistake for a missing one:
 
@@ -125,6 +127,19 @@ Where to look for it, because the rule is easy to mistake for a missing one:
 Two traps in that list. An empty **Active alerts** page is not evidence that the rule is missing, and the same goes for `/api/alertmanager/grafana/api/v2/alerts`, which only lists currently firing instances. To see the rule in every state, use `/api/prometheus/grafana/api/v1/rules`, which reports `inactive`, `pending` and `firing` alike.
 
 The other one is the folder itself. **Grafana stores alert rule folders as ordinary folders,** so the `Order Tracker Alerts` folder declared in the provisioning file also appears in the **Dashboards** section, where it is permanently empty because it holds alert rules rather than dashboards. An empty *Order Tracker Alerts* folder under Dashboards is expected and means nothing is wrong; the rules live under Alerting. The dashboard itself is in the separate **Order Tracker** folder.
+
+## Incident responder
+
+When this rule fires it is not just a dashboard panel going red. A small service on port 8001 receives the webhook, gathers the evidence from all three backends, and starts a coding agent headlessly to diagnose it.
+
+```bash
+docker compose up -d
+uv run uvicorn incident_response.main:app --app-dir incident-response --port 8001
+```
+
+It runs on the host rather than in Compose, so the agent inherits your local `opencode` credentials and your working tree. Each incident produces a directory under `incident-response/incidents/` containing a `brief.md` that names the failing routes, quotes the error log lines, and prints every span of every failing trace.
+
+The agent may edit files and has no shell, so an unattended alert leaves a fix in your working tree, uncommitted, reviewable with `git diff`. See [`incident-response/README.md`](incident-response/README.md) for the endpoints, the configuration and what the agent is allowed to do.
 
 ## Things that bit me
 
