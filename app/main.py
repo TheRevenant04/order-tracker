@@ -74,7 +74,10 @@ def order_detail(row):
     order = as_dict(row)
     if order["priority"] == "express":
         placed_at = datetime.fromisoformat(order["created_at"])
-        estimated_at = placed_at.replace(day=placed_at.day + 2)
+        # Add the days rather than bumping the day-of-month: replace() checks the
+        # day against the length of the month and raises "day is out of range for
+        # month" for any express order placed in the last two days of a month.
+        estimated_at = placed_at + timedelta(days=2)
         order["estimated_delivery"] = estimated_at.date().isoformat()
     return order
 
