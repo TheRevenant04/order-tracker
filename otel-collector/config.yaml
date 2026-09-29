@@ -1,0 +1,56 @@
+# Single collector for all three signals. The app only has to know where the
+# OTLP endpoint is; what happens to the data from here on is this file's problem.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Refuse data rather than grow without bound if the exporters fall behind.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+
+exporters:
+  # Metrics leave the collector by being scraped, not pushed: Prometheus polls
+  # :8889/metrics. Resource attributes such as service.name become labels, so
+  # the dashboard can filter on them.
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    resource_to_telemetry_conversion:
+      enabled: true
+
+  otlphttp/tempo:
+    endpoint: http://tempo:4318
+
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
+
+extensions:
+  # Proves the collector is up and draining pipelines. /v1/... on this port
+  # answers 404 for anything but the health check itself.
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/tempo]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/loki]

@@ -1,0 +1,64 @@
+apiVersion: 1
+
+# Drops the built-in Prometheus so re-provisioning this file replaces it
+# instead of leaving two datasources pointing at the same place.
+deleteDatasources:
+  - name: Prometheus
+    orgId: 1
+  - name: Loki
+    orgId: 1
+  - name: Tempo
+    orgId: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      httpMethod: POST
+      timeInterval: 10s
+
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    jsonData:
+      maxLines: 1000
+      # Log line to trace. Loki keeps the OTLP log attributes, trace_id
+      # included, as structured metadata rather than as stream labels, so the
+      # link is attached to the metadata field instead of the line text.
+      derivedFields:
+        - name: TraceID
+          matcherType: label
+          matcherRegex: trace_id
+          url: "$${__value.raw}"
+          datasourceUid: tempo
+
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    jsonData:
+      # Span to log lines. filterByTraceID is on because it produces the
+      # `| trace_id="..."` pipeline stage, which is the only form that can match
+      # trace_id now that it is structured metadata rather than a label.
+      tracesToLogsV2:
+        datasourceUid: loki
+        spanStartTimeShift: -5m
+        spanEndTimeShift: 5m
+        filterByTraceID: true
+        filterBySpanID: false
+        tags:
+          - key: service_name
+            value: order-tracker
+      serviceMap:
+        datasourceUid: prometheus
+      nodeGraph:
+        enabled: true
+      search:
+        hide: false
