@@ -5,9 +5,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
+
+from app import telemetry
 
 
 DB_PATH = Path(os.getenv("ORDER_DB_PATH", "data/orders.db"))
@@ -51,6 +53,23 @@ def as_dict(row):
     return dict(row) if row else None
 
 
+def route_path(request):
+    route = request.scope.get("route")
+    return route.path if route is not None else request.url.path
+
+
+def lookup_order(order_id, route, status_code=200):
+    """Fetches one order, recording a span, metric and log line for the lookup."""
+    with telemetry.order_lookup(order_id, route, status_code) as lookup:
+        with connect() as db:
+            row = db.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "Order not found")
+        order = order_detail(row)
+        lookup.priority = order["priority"]
+        return order
+
+
 def order_detail(row):
     order = as_dict(row)
     if order["priority"] == "express":
@@ -72,11 +91,14 @@ class StatusUpdate(BaseModel):
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    telemetry.configure()
     init_db()
     yield
+    telemetry.flush()
 
 
 app = FastAPI(title="Order Tracker", lifespan=lifespan)
+app.add_middleware(telemetry.ServerTracingMiddleware, router=app.router)
 
 
 @app.get("/")
@@ -99,16 +121,12 @@ def list_orders():
 
 
 @app.get("/api/orders/{order_id}")
-def get_order(order_id: str):
-    with connect() as db:
-        row = db.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
-    if row is None:
-        raise HTTPException(404, "Order not found")
-    return order_detail(row)
+def get_order(request: Request, order_id: str):
+    return lookup_order(order_id, route_path(request))
 
 
 @app.post("/api/orders", status_code=201)
-def create_order(order: NewOrder):
+def create_order(request: Request, order: NewOrder):
     if order.priority not in {"standard", "express"}:
         raise HTTPException(422, "Priority must be standard or express")
     order_id = str(uuid4())
@@ -118,11 +136,11 @@ def create_order(order: NewOrder):
             (order_id, order.customer, order.item, order.priority, "received",
              datetime.now(timezone.utc).isoformat()),
         )
-    return get_order(order_id)
+    return lookup_order(order_id, route_path(request), status_code=201)
 
 
 @app.patch("/api/orders/{order_id}")
-def update_status(order_id: str, update: StatusUpdate):
+def update_status(request: Request, order_id: str, update: StatusUpdate):
     if update.status not in STATUSES:
         raise HTTPException(422, "Invalid status")
     with connect() as db:
@@ -132,4 +150,4 @@ def update_status(order_id: str, update: StatusUpdate):
         )
     if cursor.rowcount == 0:
         raise HTTPException(404, "Order not found")
-    return get_order(order_id)
+    return lookup_order(order_id, route_path(request))
