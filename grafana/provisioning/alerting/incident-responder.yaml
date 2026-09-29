@@ -1,0 +1,63 @@
+apiVersion: 1
+
+# Delivery for the rules in order-tracker-5xx.yaml. Kept in its own file so the
+# rule and the route that wakes up the responder can be reasoned about, and
+# reverted, separately.
+#
+# The rule file deliberately provisions no contact point, so with this file
+# removed the alert still fires and still evaluates, it just goes nowhere and
+# Grafana logs the delivery failure. That is the useful default: an alert
+# nobody wired up is visible as a rule with a health of `ok`.
+
+contactPoints:
+  - orgId: 1
+    name: incident-responder
+    receivers:
+      - uid: incident-responder-webhook
+        type: webhook
+        # false, so Grafana also posts when the alert stops firing. The
+        # responder records that notification without investigating it, which
+        # is what makes "did it clear, and when" answerable afterwards.
+        disableResolveMessage: false
+        settings:
+          # host.docker.internal is the Docker Desktop name for the host, and
+          # the responder runs on the host so that the headless assistant
+          # inherits the local opencode credentials. From inside this container
+          # the host is reachable under that name.
+          #
+          # On Linux, where Docker Desktop's DNS entry does not exist, either
+          # add `extra_hosts: ["host.docker.internal:host-gateway"]` to the
+          # grafana service in compose.yaml, or run the responder as a Compose
+          # service and point this at http://incident-response:8001/alerts.
+          url: http://host.docker.internal:8001/alerts
+          httpMethod: POST
+          # 0 means "send every alert in the group in one payload" rather
+          # than splitting them across requests, which is what the responder's
+          # payload parsing expects.
+          maxAlerts: 0
+          # A notification is not a conversation. There is nothing to say to
+          # the responder and nowhere to say it.
+          timeout: 10
+
+# Provisioning a policy replaces Grafana's built-in one, which points at
+# `grafana-default-email`. Without this the contact point above is configured
+# but never used, and that is the single easiest thing to get wrong here: the
+# rule fires, the receiver exists, and nothing is delivered.
+policies:
+  - orgId: 1
+    receiver: incident-responder
+    group_by: [grafana_folder, alertname]
+    # Long enough that a burst of failures arriving over a couple of minutes
+    # lands as one notification, so one incident gets one investigation rather
+    # than one per evaluation.
+    group_wait: 30s
+    group_interval: 5m
+    repeat_interval: 4h
+    routes:
+      # Only the rules in this folder wake the responder. Anything routed here
+      # later inherits the same treatment, which is the point of putting the
+      # route under the folder match rather than at the root.
+      - receiver: incident-responder
+        object_matchers:
+          - [grafana_folder, "=", "Order Tracker Alerts"]
+        continue: false

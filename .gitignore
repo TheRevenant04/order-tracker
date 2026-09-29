@@ -4,3 +4,8 @@ __pycache__/
 *.pyc
 data/
 .env
+# Evidence and assistant runs from real incidents. Local only: they contain
+# log lines, trace payloads and whatever the assistant happened to print.
+incident-response/incidents/
+# IDE settings, not project configuration.
+.idea/

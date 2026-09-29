@@ -1,0 +1,135 @@
+apiVersion: 1
+
+# Declared here so the alert group has somewhere to live. Grafana matches folders
+# by title, so this coexists with the "Order Tracker" folder that the dashboard
+# provider creates.
+folders:
+  - title: Order Tracker Alerts
+    orgId: 1
+
+groups:
+  - orgId: 1
+    name: order-tracker-availability
+    folder: Order Tracker Alerts
+    interval: 1m
+    rules:
+      - uid: order-tracker-5xx
+        title: "5xx responses on the order API"
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              refId: A
+              datasource:
+                type: prometheus
+                uid: prometheus
+              editorMode: code
+              # `or vector(0)` is the part that matters for quiet periods. It
+              # covers the case where the 5xx series does not exist at all yet,
+              # e.g. right after a Prometheus start or before the first 5xx has
+              # ever been served: a bare sum() over no matching series returns an
+              # *empty* vector, which Grafana reports as No Data rather than as a
+              # healthy zero. Once the series exists, increase() over a quiet
+              # window already returns 0 on its own, so this is belt and braces
+              # rather than the only thing holding the rule together. noDataState
+              # below covers the remaining case, where Prometheus cannot answer.
+              expr: 'sum(increase(order_lookup_requests_total{service_name="order-tracker", http_response_status_code=~"5.."}[5m])) or vector(0)'
+              instant: true
+              range: false
+              intervalMs: 60000
+              maxDataPoints: 43200
+              legendFormat: __auto
+              exemplar: false
+              hide: false
+            reduceOptions:
+              calcs: [lastNotNull]
+              fields: ""
+              values: false
+          - refId: C
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              datasource:
+                type: __expr__
+                uid: __expr__
+              intervalMs: 1000
+              maxDataPoints: 43200
+              conditions:
+                - type: query
+                  # Referenced by this node's own refId, not by A.
+                  query:
+                    params: [C]
+                  reducer:
+                    params: []
+                    type: last
+                  operator:
+                    type: and
+                  evaluator:
+                    type: gt
+                    params: [0]
+        # `or vector(0)` already turns a missing 5xx series into a healthy 0, so
+        # this is the second line of defence: it covers Prometheus being unable
+        # to answer the query at all.
+        noDataState: OK
+        # A query that cannot be evaluated is worth knowing about, so this stays
+        # as Error rather than being hidden behind noDataState.
+        execErrState: Error
+        # Absorb a single unlucky request without paging anyone.
+        for: 2m
+        isPaused: false
+        labels:
+          severity: warning
+          service: order-tracker
+        annotations:
+          summary: "5xx responses on the order API in the last 5 minutes"
+          description: |
+            The order API served at least one 5xx response in the last 5 minutes.
+
+            Affected endpoints
+              GET   /api/orders
+              GET   /api/orders/{order_id}
+              POST  /api/orders              (counts as 201, not 200)
+              PATCH /api/orders/{order_id}
+              This rule aggregates across all of them, since the alert is on the
+              service rather than on one route. To see which route is actually
+              failing, add http_route to the selector, or read it off the
+              "Server errors by route" panel, which splits on that label.
+
+            Metric
+              Prometheus datasource `prometheus`
+              sum(increase(order_lookup_requests_total{
+                service_name="order-tracker",
+                http_response_status_code=~"5.."
+              }[5m])) or vector(0)
+
+            Time window
+              Window      5 minutes, the `[5m]` range of the increase() call
+              Evaluated   every 1 minute
+              Fires after 2 consecutive minutes above zero, then resolves as soon
+              as a 5 minute window comes back clean
+              Threshold   more than 0
+
+            No 5xx in the window
+              Read as healthy, not as missing data. Two mechanisms, because they
+              cover different cases: `or vector(0)` turns an empty result into 0
+              when the 5xx series does not exist at all yet, and once it does
+              exist increase() already returns 0 across a quiet window. noDataState
+              is OK as well, for the separate case where Prometheus cannot answer.
+
+            Dashboard
+              http://127.0.0.1:3000/d/order-tracker-requests/order-tracker-requests-and-errors
+              "Server errors by route" (panel 6) is the one to look at first
+              "Error ratio" (panel 3) and "Error log lines" (panel 10) follow from
+              the same `http_response_status_code` label, and "Failed request
+              traces" (panel 11) has the exception for the worst ones
+          dashboardUid: order-tracker-requests
+          panelId: 6
